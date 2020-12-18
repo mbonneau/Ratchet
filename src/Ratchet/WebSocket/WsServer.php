@@ -6,6 +6,7 @@ use Ratchet\MessageComponentInterface as DataComponentInterface;
 use Ratchet\Http\HttpServerInterface;
 use Ratchet\Http\CloseResponseTrait;
 use Psr\Http\Message\RequestInterface;
+use Ratchet\RFC6455\Handshake\PermessageDeflateOptions;
 use Ratchet\RFC6455\Messaging\MessageInterface;
 use Ratchet\RFC6455\Messaging\FrameInterface;
 use Ratchet\RFC6455\Messaging\Frame;
@@ -61,11 +62,16 @@ class WsServer implements HttpServerInterface {
      */
     private $msgCb;
 
+    /** @var int|null */
+    private $maxMessageSize;
+
     /**
      * @param \Ratchet\WebSocket\MessageComponentInterface|\Ratchet\MessageComponentInterface $component Your application to run with WebSockets
+     * @param int|null $maxMessageSize Limit size of incoming messages or null for library default
+     * @param bool $enablePermessageDeflate Enable permessage-deflate option on RFC6455
      * @note If you want to enable sub-protocols have your component implement WsServerInterface as well
      */
-    public function __construct(ComponentInterface $component) {
+    public function __construct(ComponentInterface $component, $maxMessageSize = null, $enablePermessageDeflate = false) {
         if ($component instanceof MessageComponentInterface) {
             $this->msgCb = function(ConnectionInterface $conn, MessageInterface $msg) {
                 $this->delegate->onMessage($conn, $msg);
@@ -78,6 +84,8 @@ class WsServer implements HttpServerInterface {
             throw new \UnexpectedValueException('Expected instance of \Ratchet\WebSocket\MessageComponentInterface or \Ratchet\MessageComponentInterface');
         }
 
+        $this->maxMessageSize = $maxMessageSize;
+
         if (bin2hex('✓') !== 'e29c93') {
             throw new \DomainException('Bad encoding, unicode character ✓ did not match expected value. Ensure charset UTF-8 and check ini val mbstring.func_autoload');
         }
@@ -86,7 +94,7 @@ class WsServer implements HttpServerInterface {
         $this->connections = new \SplObjectStorage;
 
         $this->closeFrameChecker   = new CloseFrameChecker;
-        $this->handshakeNegotiator = new ServerNegotiator(new RequestVerifier);
+        $this->handshakeNegotiator = new ServerNegotiator(new RequestVerifier, $enablePermessageDeflate);
         $this->handshakeNegotiator->setStrictSubProtocolCheck(true);
 
         if ($component instanceof WsServerInterface) {
@@ -122,20 +130,28 @@ class WsServer implements HttpServerInterface {
             return $conn->close();
         }
 
-        $wsConn = new WsConnection($conn);
+        $pmdOptions = PermessageDeflateOptions::fromRequestOrResponse($response);
+
+        $wsConn = null;
 
         $streamer = new MessageBuffer(
             $this->closeFrameChecker,
-            function(MessageInterface $msg) use ($wsConn) {
+            function(MessageInterface $msg) use (&$wsConn) {
                 $cb = $this->msgCb;
                 $cb($wsConn, $msg);
             },
-            function(FrameInterface $frame) use ($wsConn) {
+            function(FrameInterface $frame) use (&$wsConn) {
                 $this->onControlFrame($frame, $wsConn);
             },
             true,
-            $this->ueFlowFactory
+            $this->ueFlowFactory,
+            $this->maxMessageSize,
+            null,
+            [$conn, 'send'],
+            $pmdOptions[0]
         );
+
+        $wsConn = new WsConnection($conn, $streamer);
 
         $this->connections->attach($conn, new ConnContext($wsConn, $streamer));
 

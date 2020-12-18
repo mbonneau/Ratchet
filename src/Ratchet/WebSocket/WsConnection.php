@@ -1,14 +1,25 @@
 <?php
 namespace Ratchet\WebSocket;
 use Ratchet\AbstractConnectionDecorator;
+use Ratchet\ConnectionInterface;
 use Ratchet\RFC6455\Messaging\DataInterface;
 use Ratchet\RFC6455\Messaging\Frame;
+use Ratchet\RFC6455\Messaging\MessageBuffer;
 
 /**
  * {@inheritdoc}
  * @property \StdClass $WebSocket
  */
 class WsConnection extends AbstractConnectionDecorator {
+    /** @var MessageBuffer */
+    private $streamer;
+
+    public function __construct(ConnectionInterface $conn, MessageBuffer $streamer) {
+        parent::__construct($conn);
+        $this->streamer = $streamer;
+    }
+
+
     /**
      * {@inheritdoc}
      */
@@ -18,7 +29,7 @@ class WsConnection extends AbstractConnectionDecorator {
                 $msg = new Frame($msg);
             }
 
-            $this->getConnection()->send($msg->getContents());
+            $this->streamer->sendFrame($msg);
         }
 
         return $this;
